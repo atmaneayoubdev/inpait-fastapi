@@ -10,9 +10,9 @@ import base64
 import io
 import time
 from fastapi import APIRouter
-from utils import torch_gc
+from test.utils import torch_gc
 # Import utility functions
-from utils import decode_base64_to_image, concat_alpha_channel, pil_to_bytes
+from test.utils import decode_base64_to_image, concat_alpha_channel, pil_to_bytes
 from schema import InpaintRequest
 # Define API endpoints
 import time

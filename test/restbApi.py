@@ -1,5 +1,5 @@
 import cv2
-from utils import get_bounding_box_coordinates, draw_bounding_box
+from test.utils import get_bounding_box_coordinates, draw_bounding_box
 
 
 #  Get the bounding box coordinates:

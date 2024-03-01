@@ -20,7 +20,7 @@ from helper import (
     concat_alpha_channel,
 )
 from schema import InpaintRequest
-from utils import torch_gc
+from test.utils import torch_gc
 from lama import LaMa
 
 app = FastAPI()
