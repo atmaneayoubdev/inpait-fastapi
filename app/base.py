@@ -6,14 +6,12 @@ import torch
 import numpy as np
 from loguru import logger
 
-from helper import (
+from app.helper import (
     boxes_from_mask,
     resize_max_size,
     pad_img_to_modulo,
-    switch_mps_device,
 )
-from schema import InpaintRequest, HDStrategy
-
+from app.schema import InpaintRequest, HDStrategy
 
 
 class InpaintModel:
@@ -29,7 +27,7 @@ class InpaintModel:
         Args:
             device:
         """
-        device = switch_mps_device(self.name, device)
+        # device = switch_mps_device(self.name, device)
         self.device = device
         self.init_model(device, **kwargs)
 
@@ -274,5 +272,3 @@ class InpaintModel:
             image, mask, box, config)
 
         return self._pad_forward(crop_img, crop_mask, config), [l, t, r, b]
-
-

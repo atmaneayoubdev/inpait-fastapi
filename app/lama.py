@@ -3,11 +3,11 @@ import cv2
 import numpy as np
 import torch
 
-from helper import (
+from app.helper import (
     norm_img,
 )
-from schema import InpaintRequest
-from base import InpaintModel
+from app.schema import InpaintRequest
+from app.base import InpaintModel
 
 
 class LaMa(InpaintModel):
@@ -17,15 +17,12 @@ class LaMa(InpaintModel):
 
     def init_model(self, device, **kwargs):
         # Update this with the actual path to your model file
-        model_path = "checkpoints/big-lama.pt"
+        model_path = "app/checkpoints/big-lama.pt"
+
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Model file not found at: {model_path}")
 
         self.model = torch.jit.load(model_path, map_location=device).eval()
-
-    @staticmethod
-    def is_downloaded() -> bool:
-        return os.path.exists("path/to/big-lama.pt")
 
     def forward(self, image, mask, config: InpaintRequest):
         """Input image and output image have same size

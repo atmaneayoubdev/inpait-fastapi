@@ -1,130 +1,100 @@
 import base64
+import gc
 import imghdr
 import io
 import os
 import sys
 from typing import List, Optional, Dict, Tuple
-
-from urllib.parse import urlparse
 import cv2
 from PIL import Image, ImageOps, PngImagePlugin
 import numpy as np
 import torch
-from const import MPS_UNSUPPORT_MODELS
-from loguru import logger
-from torch.hub import download_url_to_file, get_dir
-import hashlib
 
 
-def md5sum(filename):
-    md5 = hashlib.md5()
-    with open(filename, "rb") as f:
-        for chunk in iter(lambda: f.read(128 * md5.block_size), b""):
-            md5.update(chunk)
-    return md5.hexdigest()
+def save_image_bytes(image_bytes, output_dir, filename):
+    # Ensure the output directory exists
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Construct the output file path
+    output_path = os.path.join(output_dir, filename)
+
+    # Save the image bytes to the output file
+    with open(output_path, 'wb') as f:
+        f.write(image_bytes)
+
+    print(f"Image saved to: {output_path}")
 
 
-def switch_mps_device(model_name, device):
-    if model_name in MPS_UNSUPPORT_MODELS and str(device) == "mps":
-        logger.info(f"{model_name} not support mps, switch to cpu")
-        return torch.device("cpu")
-    return device
+def torch_gc():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+    gc.collect()
 
 
-def get_cache_path_by_url(url):
-    parts = urlparse(url)
-    hub_dir = get_dir()
-    model_dir = os.path.join(hub_dir, "checkpoints")
-    if not os.path.isdir(model_dir):
-        os.makedirs(model_dir)
-    filename = os.path.basename(parts.path)
-    cached_file = os.path.join(model_dir, filename)
-    return cached_file
+def decode_base64_to_image(
+    encoding: str, gray=False
+) -> Tuple[np.array, Optional[np.array], Dict]:
+    if encoding.startswith("data:image/") or encoding.startswith(
+        "data:application/octet-stream;base64,"
+    ):
+        encoding = encoding.split(";")[1].split(",")[1]
+    image = Image.open(io.BytesIO(base64.b64decode(encoding)))
+
+    alpha_channel = None
+    try:
+        image = ImageOps.exif_transpose(image)
+    except:
+        pass
+    # exif_transpose will remove exif rotate info，we must call image.info after exif_transpose
+    infos = image.info
+
+    if gray:
+        image = image.convert("L")
+        np_img = np.array(image)
+    else:
+        if image.mode == "RGBA":
+            np_img = np.array(image)
+            alpha_channel = np_img[:, :, -1]
+            np_img = cv2.cvtColor(np_img, cv2.COLOR_RGBA2RGB)
+        else:
+            image = image.convert("RGB")
+            np_img = np.array(image)
+
+    return np_img, alpha_channel, infos
 
 
-def download_model(url, model_md5: str = None):
-    cached_file = get_cache_path_by_url(url)
-    if not os.path.exists(cached_file):
-        sys.stderr.write('Downloading: "{}" to {}\n'.format(url, cached_file))
-        hash_prefix = None
-        download_url_to_file(url, cached_file, hash_prefix, progress=True)
-        if model_md5:
-            _md5 = md5sum(cached_file)
-            if model_md5 == _md5:
-                logger.info(f"Download model success, md5: {_md5}")
-            else:
-                try:
-                    os.remove(cached_file)
-                    logger.error(
-                        f"Model md5: {_md5}, expected md5: {model_md5}, wrong model deleted. Please restart iopaint."
-                        f"If you still have errors, please try download model manually first https://lama-cleaner-docs.vercel.app/install/download_model_manually.\n"
-                    )
-                except:
-                    logger.error(
-                        f"Model md5: {_md5}, expected md5: {model_md5}, please delete {cached_file} and restart iopaint."
-                    )
-                exit(-1)
+def concat_alpha_channel(rgb_np_img, alpha_channel) -> np.ndarray:
+    if alpha_channel is not None:
+        if alpha_channel.shape[:2] != rgb_np_img.shape[:2]:
+            alpha_channel = cv2.resize(
+                alpha_channel, dsize=(rgb_np_img.shape[1], rgb_np_img.shape[0])
+            )
+        rgb_np_img = np.concatenate(
+            (rgb_np_img, alpha_channel[:, :, np.newaxis]), axis=-1
+        )
+    return rgb_np_img
 
-    return cached_file
+
+def pil_to_bytes(pil_img, ext: str, quality: int = 95, infos={}) -> bytes:
+    with io.BytesIO() as output:
+        kwargs = {k: v for k, v in infos.items() if v is not None}
+        if ext == "jpg":
+            ext = "jpeg"
+        if "png" == ext.lower() and "parameters" in kwargs:
+            pnginfo_data = PngImagePlugin.PngInfo()
+            pnginfo_data.add_text("parameters", kwargs["parameters"])
+            kwargs["pnginfo"] = pnginfo_data
+
+        pil_img.save(output, format=ext, quality=quality, **kwargs)
+        image_bytes = output.getvalue()
+    return image_bytes
 
 
 def ceil_modulo(x, mod):
     if x % mod == 0:
         return x
     return (x // mod + 1) * mod
-
-
-def handle_error(model_path, model_md5, e):
-    _md5 = md5sum(model_path)
-    if _md5 != model_md5:
-        try:
-            os.remove(model_path)
-            logger.error(
-                f"Model md5: {_md5}, expected md5: {model_md5}, wrong model deleted. Please restart iopaint."
-                f"If you still have errors, please try download model manually first https://lama-cleaner-docs.vercel.app/install/download_model_manually.\n"
-            )
-        except:
-            logger.error(
-                f"Model md5: {_md5}, expected md5: {model_md5}, please delete {model_path} and restart iopaint."
-            )
-    else:
-        logger.error(
-            f"Failed to load model {model_path},"
-            f"please submit an issue at https://github.com/Sanster/lama-cleaner/issues and include a screenshot of the error:\n{e}"
-        )
-    exit(-1)
-
-
-def load_jit_model(url_or_path, device):
-    if os.path.exists(url_or_path):
-        model_path = url_or_path
-    else:
-        model_path = url_or_path
-
-    logger.info(f"Loading model from: {model_path}")
-    try:
-        model = torch.jit.load(model_path, map_location="cpu").to(device)
-    except Exception as e:
-        handle_error(model_path, None, e)
-    model.eval()
-    return model
-
-
-def load_model(model: torch.nn.Module, url_or_path, device, model_md5):
-    if os.path.exists(url_or_path):
-        model_path = url_or_path
-    else:
-        model_path = download_model(url_or_path, model_md5)
-
-    try:
-        logger.info(f"Loading model from: {model_path}")
-        state_dict = torch.load(model_path, map_location="cpu")
-        model.load_state_dict(state_dict, strict=True)
-        model.to(device)
-    except Exception as e:
-        handle_error(model_path, model_md5, e)
-    model.eval()
-    return model
 
 
 def numpy_to_bytes(image_numpy: np.ndarray, ext: str) -> bytes:
