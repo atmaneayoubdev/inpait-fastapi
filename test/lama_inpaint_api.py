@@ -3,7 +3,7 @@ import requests
 import base64
 
 # Define the endpoint URL
-endpoint_url = "http://localhost:8001/api/v1/inpaint"
+endpoint_url = "http://localhost:8000/api/v1/inpaint"
 
 
 # Read image and mask files as binary data

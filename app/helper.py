@@ -8,7 +8,9 @@ from typing import List, Optional, Dict, Tuple
 import cv2
 from PIL import Image, ImageOps, PngImagePlugin
 import numpy as np
+import requests
 import torch
+from google.cloud import storage
 
 
 def save_image_bytes(image_bytes, output_dir, filename):
@@ -376,3 +378,66 @@ def gen_frontend_mask(bgr_or_gray_mask):
     res_mask[bgr_or_gray_mask > 128] = [255, 203, 0, int(255 * 0.73)]
     res_mask = cv2.cvtColor(res_mask, cv2.COLOR_BGRA2RGBA)
     return res_mask
+
+
+def check_image_exists_in_gcs(project_id, bucket_name, image_name):
+    """Check if an image with a given name exists in a specific GCS bucket."""
+    client = storage.Client(project=project_id)
+
+    bucket = client.get_bucket(bucket_name)
+
+    try:
+        # Check if the image exists in the bucket
+        blob = bucket.blob(image_name)
+        exists = blob.exists()
+
+        if exists:
+            print(
+                f"The image '{image_name}' exists in bucket '{bucket_name}'.")
+            return True
+        else:
+            print(
+                f"The image '{image_name}' does not exist in bucket '{bucket_name}'.")
+            return False
+
+    except Exception as e:
+        print(f"Error checking image '{image_name}': {str(e)}")
+        return False
+
+
+def download_image_from_gcs(image_name):
+    project_id = 'valuator-381307'
+    bucket_name = 'water_mark_remover_masks'
+
+    client = storage.Client(project=project_id)
+    bucket = client.get_bucket(bucket_name)
+
+    try:
+        # Download the image as bytes
+        blob = bucket.blob(image_name)
+        image_bytes = blob.download_as_string()
+
+        # Convert image bytes to base64 string
+        image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+
+        print(f"The image '{image_name}' has been downloaded as base64.")
+        return image_base64
+    except Exception as e:
+        print(f"Error downloading image '{image_name}': {str(e)}")
+        return None
+
+
+def download_image(url: str) -> Optional[np.array]:
+    response = requests.get(url)
+    if response.status_code == 200:
+        # Convert the downloaded image bytes to NumPy array
+        image = np.array(Image.open(io.BytesIO(response.content)))
+        return image
+    else:
+        return None
+
+
+def resize_image(image: np.array, target_shape: Tuple[int, int]) -> np.array:
+    # Resize the image to the target shape
+    resized_image = cv2.resize(image, target_shape[::-1])
+    return resized_image
