@@ -36,6 +36,50 @@ class InpaintRequest(BaseModel):
     )
 
 
+class WatermarkRemoverRequest(BaseModel):
+    image_url: Optional[str] = Field(None, description="Image url")
+
+    hd_strategy: str = Field(
+        HDStrategy.CROP,
+        description="Different way to preprocess image, only used by erase models(e.g. lama/mat)",
+    )
+    hd_strategy_crop_trigger_size: int = Field(
+        800,
+        description="Crop trigger size for hd_strategy=CROP, if the longer side of the image is larger than this value, use crop strategy",
+    )
+    hd_strategy_crop_margin: int = Field(
+        128, description="Crop margin for hd_strategy=CROP"
+    )
+    hd_strategy_resize_limit: int = Field(
+        1280, description="Resize limit for hd_strategy=RESIZE"
+    )
+    sd_keep_unmasked_area: bool = Field(
+        True, description="Keep unmasked area unchanged"
+    )
+
+
+class WatermarkImgRemoverRequest(BaseModel):
+    image: Optional[str] = Field(None, description="base64 encoded image")
+
+    hd_strategy: str = Field(
+        HDStrategy.CROP,
+        description="Different way to preprocess image, only used by erase models(e.g. lama/mat)",
+    )
+    hd_strategy_crop_trigger_size: int = Field(
+        800,
+        description="Crop trigger size for hd_strategy=CROP, if the longer side of the image is larger than this value, use crop strategy",
+    )
+    hd_strategy_crop_margin: int = Field(
+        128, description="Crop margin for hd_strategy=CROP"
+    )
+    hd_strategy_resize_limit: int = Field(
+        1280, description="Resize limit for hd_strategy=RESIZE"
+    )
+    sd_keep_unmasked_area: bool = Field(
+        True, description="Keep unmasked area unchanged"
+    )
+
+
 class AgencyInpaintRequest(BaseModel):
     image_url: str
     mask_name: str

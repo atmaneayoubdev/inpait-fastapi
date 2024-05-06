@@ -1,16 +1,21 @@
 import base64
-import io
 import json
 import traceback
+import logging
 
 import requests
+import uvicorn
 from app.helper import (
     check_image_exists_in_gcs,
     decode_base64_to_image,
     download_image_from_gcs,
     pil_to_bytes,
     concat_alpha_channel,
-    torch_gc
+    torch_gc, check_image_exists_in_gcs,
+    get_bounding_box_coordinates,
+    download_and_create_mask,
+    upload_img_to_gcp,
+    create_mask_from_base64
 )
 from loguru import logger
 from fastapi import FastAPI, HTTPException, Response, status
@@ -20,14 +25,14 @@ import numpy as np
 import cv2
 import time
 from app.lama import LaMa
-from app.schema import AgencyInpaintRequest, InpaintRequest
-from app.helper import check_image_exists_in_gcs
+from app.schema import AgencyInpaintRequest, InpaintRequest, WatermarkImgRemoverRequest, WatermarkRemoverRequest
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import FastAPI, Response, status
 import os
 
 # Set the path to the service account key file
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "app/valuator-381307-0ceea1748d71.json"
+logging.basicConfig(level=logging.DEBUG)
+
 
 # Import FastAPI and other necessary modules
 # Other imports and code...
@@ -183,3 +188,116 @@ async def agency_inpaint(req: AgencyInpaintRequest):
         # Raise an HTTP exception with the error details
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+
+@app.post("/api/v1/watermark-remover-url")
+async def watermark_remover_with_url(req: WatermarkRemoverRequest):
+
+    try:
+        top_left_x, top_left_y, bottom_right_x, bottom_right_y = get_bounding_box_coordinates(
+            req.image_url)
+
+        logging.info(
+            f"Bounding Box Coordinates: ({top_left_x}, {top_left_y}), ({bottom_right_x}, {bottom_right_y})")
+        base64_img, base64_mask = download_and_create_mask(req.image_url, top_left_x, top_left_y,
+                                                           bottom_right_x, bottom_right_y)
+        image, alpha_channel, infos = decode_base64_to_image(base64_img)
+        mask, _, _ = decode_base64_to_image(base64_mask, gray=True)
+
+        mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
+        if image.shape[:2] != mask.shape[:2]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
+            )
+
+        start = time.time()
+        # Use the LaMa model for inpainting
+        rgb_np_img = lama_model(image, mask, req)
+        logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
+        torch_gc()
+
+        rgb_np_img = cv2.cvtColor(
+            rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+        rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
+
+        ext = "png"
+        res_img_bytes = pil_to_bytes(
+            Image.fromarray(rgb_res),
+            ext=ext,
+            quality=95,  # Assuming config is defined somewhere else
+            infos=infos,
+        )
+
+        return Response(
+            content=res_img_bytes,
+            media_type=f"image/{ext}",
+        )
+
+    except HTTPException as http_exception:
+        # Handle HTTPException raised by get_bounding_box_coordinates
+        raise http_exception
+
+    except Exception as e:
+        # Handle other unexpected errors
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/v1/watermark-remover-img")
+async def watermark_remover_with_img(req: WatermarkImgRemoverRequest):
+
+    try:
+        image, alpha_channel, infos = decode_base64_to_image(req.image)
+        image_url = upload_img_to_gcp(req.image)
+
+        logging.info(f"the image url in gcp :{image_url}")
+
+        top_left_x, top_left_y, bottom_right_x, bottom_right_y = get_bounding_box_coordinates(
+            image_url)
+
+        base64_img, base64_mask = create_mask_from_base64(req.image, top_left_x, top_left_y,
+                                                          bottom_right_x, bottom_right_y)
+        image, alpha_channel, infos = decode_base64_to_image(base64_img)
+        mask, _, _ = decode_base64_to_image(base64_mask, gray=True)
+
+        mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
+        if image.shape[:2] != mask.shape[:2]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
+            )
+
+        start = time.time()
+        # Use the LaMa model for inpainting
+        rgb_np_img = lama_model(image, mask, req)
+        logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
+        torch_gc()
+
+        rgb_np_img = cv2.cvtColor(
+            rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
+        rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
+
+        ext = "png"
+        res_img_bytes = pil_to_bytes(
+            Image.fromarray(rgb_res),
+            ext=ext,
+            quality=95,  # Assuming config is defined somewhere else
+            infos=infos,
+        )
+
+        return Response(
+            content=res_img_bytes,
+            media_type=f"image/{ext}",
+        )
+
+    except HTTPException as http_exception:
+        # Handle HTTPException raised by get_bounding_box_coordinates
+        raise http_exception
+
+    except Exception as e:
+        # Handle other unexpected errors
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="127.0.0.1", port=8000)

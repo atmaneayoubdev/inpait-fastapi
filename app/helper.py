@@ -1,4 +1,5 @@
 import base64
+import datetime
 import gc
 import imghdr
 import io
@@ -7,10 +8,13 @@ import sys
 from typing import List, Optional, Dict, Tuple
 import cv2
 from PIL import Image, ImageOps, PngImagePlugin
+from fastapi import HTTPException
 import numpy as np
 import requests
 import torch
 from google.cloud import storage
+import logging
+logging.basicConfig(level=logging.INFO)
 
 
 def save_image_bytes(image_bytes, output_dir, filename):
@@ -427,6 +431,37 @@ def download_image_from_gcs(image_name):
         return None
 
 
+def upload_img_to_gcp(image_base64):
+    project_id = "valuator-381307"
+    bucket_name = "watermark-removing-temp"
+
+    try:
+        # Initialize the GCS client
+        client = storage.Client(project=project_id)
+        bucket = client.bucket(bucket_name)
+
+        # Convert base64 image data to bytes
+        image_bytes = base64.b64decode(image_base64)
+
+        # Upload image to GCS with correct content type
+        blob = bucket.blob("temp_image.png")  # Use a temporary file name
+        blob.upload_from_string(image_bytes, content_type="image/png")
+
+        # Set expiration time for the URL
+        expiration = datetime.timedelta(hours=1)  # URL expires in 1 hour
+
+        # Generate signed URL for the uploaded image
+        url = blob.generate_signed_url(expiration=expiration)
+
+        print(
+            f"Image uploaded to GCS bucket '{bucket_name}' and URL generated.")
+        return url
+
+    except Exception as e:
+        print(f"Error uploading image to GCS: {str(e)}")
+        return None
+
+
 def download_image(url: str) -> Optional[np.array]:
     response = requests.get(url)
     if response.status_code == 200:
@@ -441,3 +476,173 @@ def resize_image(image: np.array, target_shape: Tuple[int, int]) -> np.array:
     # Resize the image to the target shape
     resized_image = cv2.resize(image, target_shape[::-1])
     return resized_image
+
+
+def get_bounding_box_coordinates(image_url):
+    url = "https://api-us.restb.ai/vision/v2/multipredict"
+    headers = {
+        "X-Property-ID": "1"
+    }
+    params = {
+        "model_id": "re_logo",
+        "client_key": "8c57199bd6239b90d070bd146d25fc24c1a63b2c2a99cbaa8941f52ce2c2f01b",
+        "image_url": image_url
+    }
+
+    try:
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()  # Raise an exception for 4xx or 5xx status codes
+
+        # Parse the JSON response
+        json_data = response.json()
+        error = json_data.get("error")
+
+        # Check if the response indicates an error
+        if error == "true":
+            message = json_data.get("message")
+            error_id = json_data.get("error_id")
+            time = json_data.get("time")
+            correlation_id = json_data.get("correlation_id")
+            version = json_data.get("version")
+
+            # Log the error details
+            logging.error(
+                f"Error {error_id} occurred at {time}: {message}, Correlation ID: {correlation_id}, Version: {version}")
+
+            # Raise an HTTPException with status code 400 and custom message
+            raise HTTPException(status_code=400, detail=message)
+
+        # Extract bounding box coordinates
+        detections = json_data.get("response", {}).get(
+            "solutions", {}).get("re_logo", {}).get("detections", [])
+        if not detections:
+            logging.info("Watermark not detected")
+            raise HTTPException(
+                status_code=400, detail="Watermark not detected in the provided image.")
+
+        bounding_box = detections[0]["bounding_box"]
+        top_left_x = bounding_box["top_left_x"]
+        top_left_y = bounding_box["top_left_y"]
+        bottom_right_x = bounding_box["bottom_right_x"]
+        bottom_right_y = bounding_box["bottom_right_y"]
+
+        return top_left_x, top_left_y, bottom_right_x, bottom_right_y
+
+    except requests.exceptions.RequestException as e:
+        # Log the error and raise an HTTPException with status code 400
+        logging.error(f"Error occurred while processing the image: {str(e)}")
+        raise HTTPException(
+            status_code=400, detail="Error occurred while processing the image.")
+
+
+def draw_bounding_box(image_url, top_left_x, top_left_y, bottom_right_x, bottom_right_y):
+    # Download the image from the URL
+    response = requests.get(image_url)
+    if response.status_code == 200:
+        # Create a stream-like object from the image content
+        image_content = io.BytesIO(response.content)
+        # Decode the image content with OpenCV
+        image = cv2.imdecode(np.frombuffer(
+            image_content.read(), np.uint8), cv2.IMREAD_COLOR)
+
+        # Calculate bounding box coordinates in pixel values
+        height, width, _ = image.shape
+        x1 = int(top_left_x * width)
+        y1 = int(top_left_y * height)
+        x2 = int(bottom_right_x * width)
+        y2 = int(bottom_right_y * height)
+
+        # Draw bounding box on the image
+        color = (0, 255, 0)  # Green color
+        thickness = 2
+        cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+
+        # Save the mask image
+        # create_mask(image.shape, top_left_x, top_left_y,
+        #             bottom_right_x, bottom_right_y, "Images/restb_mask.jpg")
+
+        # Display the image with bounding box
+        cv2.imshow("Image with Bounding Box", image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    else:
+        print("Failed to download image from the URL")
+
+
+def download_and_create_mask(image_url, top_left_x, top_left_y, bottom_right_x, bottom_right_y):
+    # Download the image from the URL
+    response = requests.get(image_url)
+    if response.status_code == 200:
+        # Create a stream-like object from the image content
+        image_content = io.BytesIO(response.content)
+        # Decode the image content with OpenCV
+        image = cv2.imdecode(np.frombuffer(
+            image_content.read(), np.uint8), cv2.IMREAD_COLOR)
+
+        # Calculate image dimensions
+        height, width, _ = image.shape
+
+        # Calculate bounding box coordinates in pixel values
+        x1 = int(top_left_x * width)
+        y1 = int(top_left_y * height)
+        x2 = int(bottom_right_x * width)
+        y2 = int(bottom_right_y * height)
+
+        # Create a black image mask
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+
+        # Draw the bounding box on the mask
+        cv2.rectangle(mask, (x1, y1), (x2, y2), (255, 255, 255), -1)
+
+        # Encode the image and mask as base64
+        _, image_buffer = cv2.imencode(".png", image)
+        _, mask_buffer = cv2.imencode(".png", mask)
+
+        image_base64 = base64.b64encode(image_buffer).decode()
+        mask_base64 = base64.b64encode(mask_buffer).decode()
+
+        return image_base64, mask_base64
+
+    else:
+        print("Failed to download image from the URL")
+        return None, None
+
+
+def create_mask_from_base64(image_base64, top_left_x, top_left_y, bottom_right_x, bottom_right_y):
+    try:
+        # Log the first 50 characters of the base64 string
+        logging.info("Received image_base64: %s", image_base64[:50])
+
+        # Decode base64 image data
+        image_bytes = base64.b64decode(image_base64)
+        image_np = np.frombuffer(image_bytes, np.uint8)
+        image = cv2.imdecode(image_np, cv2.IMREAD_COLOR)
+
+        # Calculate image dimensions
+        height, width, _ = image.shape
+
+        # Calculate bounding box coordinates in pixel values
+        x1 = int(top_left_x * width)
+        y1 = int(top_left_y * height)
+        x2 = int(bottom_right_x * width)
+        y2 = int(bottom_right_y * height)
+
+        # Create a black image mask
+        mask = np.zeros(image.shape[:2], dtype=np.uint8)
+
+        # Draw the bounding box on the mask
+        cv2.rectangle(mask, (x1, y1), (x2, y2), (255, 255, 255), -1)
+
+        # Encode the mask as base64
+        _, mask_buffer = cv2.imencode(".png", mask)
+        mask_base64 = base64.b64encode(mask_buffer).decode()
+
+        # Encode the image as base64
+        _, image_buffer = cv2.imencode(".png", image)
+        image_base64 = base64.b64encode(image_buffer).decode()
+
+        return image_base64, mask_base64
+
+    except Exception as e:
+        logging.error(f"Error creating mask from base64 image: {str(e)}")
+        return None, None
