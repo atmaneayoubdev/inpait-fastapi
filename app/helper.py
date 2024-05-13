@@ -1,3 +1,4 @@
+from PIL import Image
 import base64
 import datetime
 import gc
@@ -646,3 +647,47 @@ def create_mask_from_base64(image_base64, top_left_x, top_left_y, bottom_right_x
     except Exception as e:
         logging.error(f"Error creating mask from base64 image: {str(e)}")
         return None, None
+
+
+def compress_image(image_np, target_size_mb=1):
+    # Convert image to PIL Image
+    image_pil = Image.fromarray(image_np)
+
+    # Define compression quality
+    quality = 95
+
+    # Initialize compression loop parameters
+    min_quality = 1
+    max_quality = 100
+    step = 5
+
+    # Initialize compressed image size
+    compressed_size = target_size_mb * 1024 * 1024
+
+    # Perform binary search for the optimal quality
+    while True:
+        # Save image to memory buffer with the current compression quality
+        buffer = io.BytesIO()
+        image_pil.save(buffer, format="JPEG", quality=quality)
+
+        # Calculate the size of the compressed image
+        compressed_image_size = buffer.tell()
+
+        # Adjust quality based on the comparison with the target size
+        if compressed_image_size > compressed_size:
+            max_quality = quality
+            quality -= step
+        else:
+            min_quality = quality
+            quality += step
+
+        # If the difference between min and max quality is less than the step,
+        # or if the quality is already at the minimum or maximum, break the loop
+        if max_quality - min_quality < step or quality <= min_quality or quality >= max_quality:
+            break
+
+    # Convert the PIL Image back to NumPy array
+    compressed_image_np = cv2.imdecode(np.frombuffer(
+        buffer.getvalue(), dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    return compressed_image_np
