@@ -691,3 +691,46 @@ def compress_image(image_np, target_size_mb=1):
         buffer.getvalue(), dtype=np.uint8), cv2.IMREAD_COLOR)
 
     return compressed_image_np
+
+
+def compress_image_png(image_np, target_size_mb=1):
+    # Convert image to PIL Image
+    image_pil = Image.fromarray(image_np)
+
+    # Define compression level
+    compression_level = 6  # Adjust the compression level as needed
+
+    # Initialize compression loop parameters
+    min_compression = 0  # Minimum compression level
+    max_compression = 9  # Maximum compression level
+
+    # Initialize compressed image size
+    compressed_size = target_size_mb * 1024 * 1024
+
+    # Perform binary search for the optimal compression level
+    while True:
+        # Save image to memory buffer with the current compression level
+        buffer = io.BytesIO()
+        image_pil.save(buffer, format="PNG", compress_level=compression_level)
+
+        # Calculate the size of the compressed image
+        compressed_image_size = buffer.tell()
+
+        # Adjust compression level based on the comparison with the target size
+        if compressed_image_size > compressed_size:
+            max_compression = compression_level
+            compression_level = (min_compression + compression_level) // 2
+        else:
+            min_compression = compression_level
+            compression_level = (max_compression + compression_level) // 2
+
+        # If the difference between min and max compression is less than 1,
+        # or if the compression level is already at the minimum or maximum, break the loop
+        if max_compression - min_compression < 1 or compression_level <= min_compression or compression_level >= max_compression:
+            break
+
+    # Convert the PIL Image back to NumPy array
+    compressed_image_np = cv2.imdecode(np.frombuffer(
+        buffer.getvalue(), dtype=np.uint8), cv2.IMREAD_COLOR)
+
+    return compressed_image_np

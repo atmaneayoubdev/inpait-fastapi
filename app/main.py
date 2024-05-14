@@ -326,20 +326,21 @@ async def watermark_remover_dp(req: WatermarkRemoverRequest):
         compressed_image = compress_image(image, target_size_mb=1)
         logging.info("Compressed image successfully")
 
-        # Debug: Save and print the compressed image
-        # cv2.imwrite("compressed_image.jpg", compressed_image)
-        logging.info("Saved compressed image for debugging.")
-
+        logging.info("Started Inpainting process...")
         start = time.time()
-
-        # Use the LaMa model for inpainting
         rgb_np_img = lama_model(compressed_image, mask, req)
         logger.info(f"Process time: {(time.time() - start) * 1000:.2f}ms")
         torch_gc()
 
+        logging.info(
+            "Convert the RGB image with alpha channel to PIL image...")
+        # Convert data type to uint8
+        rgb_np_img = np.uint8(rgb_np_img)
         # Convert the RGB image with alpha channel to PIL image
         pil_image = Image.fromarray(rgb_np_img)
 
+        logging.info(
+            "Convert the RGB image with alpha channel to PIL image...")
         # Convert PIL image to bytes
         ext = "jpeg"
         res_img_bytes = pil_to_bytes(
@@ -354,18 +355,13 @@ async def watermark_remover_dp(req: WatermarkRemoverRequest):
             media_type=f"image/{ext}",
         )
 
-    except Exception as e:
-        logging.error(f"Error occurred: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
-
     except HTTPException as http_exception:
         # Handle HTTPException raised by get_bounding_box_coordinates
         raise http_exception
 
     except Exception as e:
-        # Handle other unexpected errors
-        logging.info(e)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logging.error(f"Error occurred: {e}")
+        raise HTTPException(status_code=500, detail=e)
 
 
 if __name__ == "__main__":
