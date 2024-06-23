@@ -1,21 +1,15 @@
-import base64
-import json
-import traceback
 import logging
-
-import requests
 import uvicorn
 from app.helper import (
-    check_image_exists_in_gcs,
     compress_image,
     decode_base64_to_image,
-    download_image_from_gcs,
     pil_to_bytes,
     concat_alpha_channel,
-    torch_gc, check_image_exists_in_gcs,
     get_bounding_box_coordinates,
     download_and_create_mask,
     upload_img_to_gcp,
+    validate_api_key,
+    make_post_request,
     create_mask_from_base64
 )
 from loguru import logger
@@ -26,7 +20,7 @@ import numpy as np
 import cv2
 import time
 from app.lama import LaMa
-from app.schema import AgencyInpaintRequest, InpaintRequest, WatermarkImgRemoverRequest, WatermarkRemoverRequest
+from app.schema import InpaintRequest, WatermarkImgRemoverRequest, WatermarkRemoverRequest
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
@@ -42,7 +36,7 @@ try:
     torch._C._jit_override_can_fuse_on_cpu(False)
     torch._C._jit_override_can_fuse_on_gpu(False)
     torch._C._jit_set_texpr_fuser_enabled(False)
-    torch._C._jit_set_nvfuser_enabled(False)
+    # torch._C._jit_set_nvfuser_enabled(False)
 except:
     pass
 
@@ -65,143 +59,71 @@ def home():
     return {"Health Check": "OK"}
 
 
-@app.post("/api/v1/inpaint")
+@app.post("/api/v1/magic-eraser")
 async def api_inpaint(req: InpaintRequest):
-    image, alpha_channel, infos = decode_base64_to_image(req.image)
-    mask, _, _ = decode_base64_to_image(req.mask, gray=True)
-
-    mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
-    if image.shape[:2] != mask.shape[:2]:
-        raise HTTPException(
-            400,
-            detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
-        )
-
-    start = time.time()
-    # Use the LaMa model for inpainting
-    rgb_np_img = lama_model(image, mask, req)
-    logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
-    torch_gc()
-
-    rgb_np_img = cv2.cvtColor(
-        rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
-    rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
-
-    ext = "png"
-    res_img_bytes = pil_to_bytes(
-        Image.fromarray(rgb_res),
-        ext=ext,
-        quality=95,  # Assuming config is defined somewhere else
-        infos=infos,
-    )
-
-    return Response(
-        content=res_img_bytes,
-        media_type=f"image/{ext}",
-    )
-
-
-@app.post("/check-agency-watermark")
-async def check_agency_watermark(request_data: dict):
     try:
-        # Get the image name from the request data
-        image_name = request_data.get('name')
+        start_time = time.time()
 
-        if not image_name:
-            return Response(content=json.dumps({'error': 'Image name is required'}).encode('utf-8'), status_code=status.HTTP_400_BAD_REQUEST)
+        req.image = req.image.split(",")[1] if "," in req.image else req.image
+        req.mask = req.mask.split(",")[1] if "," in req.mask else req.mask
 
-        # Hardcoded GCS details for testing
-        project_id = 'valuator-381307'
-        bucket_name = 'water_mark_remover_masks'
+        if await validate_api_key(req.api_key) != 200:
+            raise HTTPException(status_code=401, detail="Invalid API key")
 
-        # Check if the image exists in the GCS bucket
-        image_exists = check_image_exists_in_gcs(
-            project_id, bucket_name, image_name)
-
-        # Return a response with the result
-        return Response(content=json.dumps({'exists': image_exists}).encode('utf-8'), status_code=status.HTTP_200_OK)
-
-    except Exception as e:
-        return Response(content=json.dumps({'error': str(e)}).encode('utf-8'), status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
-@app.post("/agency-inpaint")
-async def agency_inpaint(req: AgencyInpaintRequest):
-    try:
-
-        # Download image from imageUrl
-        image_response = requests.get(req.image_url)
-        image_base64 = base64.b64encode(image_response.content).decode('utf-8')
-
-        # Download mask from GCS using req.mask_name
-        mask_base64 = download_image_from_gcs(req.mask_name)
-        if mask_base64 is None:
-            raise HTTPException(
-                404,
-                detail=f"Mask image '{req.mask_name}' not found in GCS."
-            )
-
-        # print("Image base64:", image_base64)
-        # print("Mask base64:", mask_base64)
-
-        image, alpha_channel, infos = decode_base64_to_image(image_base64)
-        mask, _, _ = decode_base64_to_image(mask_base64, gray=True)
-
-        # Resize mask to match the size of image if they don't match
-        if image.shape[:2] != mask.shape[:2]:
-            mask = cv2.resize(mask, (image.shape[1], image.shape[0]))
-
-        # Convert mask to binary
+        image, alpha_channel, infos = decode_base64_to_image(req.image)
+        mask, _, _ = decode_base64_to_image(req.mask, gray=True)
         mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
 
         if image.shape[:2] != mask.shape[:2]:
             raise HTTPException(
-                400,
-                detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
+                status_code=400, detail=f"Image size ({image.shape[:2]}) and mask size ({mask.shape[:2]}) do not match."
             )
 
-        start = time.time()
-        # Use the LaMa model for inpainting
-        rgb_np_img = lama_model(image, mask, req)
-        logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
-        torch_gc()
+        process_start_time = time.time()
+        inpainted_image = lama_model(image, mask, req)
+        logger.info(
+            f"Model inference time: {(time.time() - process_start_time) * 1000:.2f} ms")
 
-        rgb_np_img = cv2.cvtColor(
-            rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
-        rgb_res = concat_alpha_channel(rgb_np_img, alpha_channel)
+        inpainted_image = cv2.cvtColor(
+            inpainted_image.astype(np.uint8), cv2.COLOR_BGR2RGB)
+        result_image = concat_alpha_channel(inpainted_image, alpha_channel)
+        result_image_bytes = pil_to_bytes(Image.fromarray(
+            result_image), ext="png", quality=95, infos=infos)
 
-        ext = "png"
-        res_img_bytes = pil_to_bytes(
-            Image.fromarray(rgb_res),
-            ext=ext,
-            quality=95,  # Assuming config is defined somewhere else
-            infos=infos,
-        )
+        time_taken = int((time.time() - start_time) * 1000)
+        proceed_request_data = {
+            "apiKey": req.api_key,
+            "creditsToDeduct": 1,
+            "endpointName": "Magic Eraser",
+            "origin": req.origin,
+            "timeTaken": time_taken
+        }
+        await make_post_request(proceed_request_data)
+        logger.info(proceed_request_data)
+        logger.info("API request processed successfully")
 
-        return Response(
-            content=res_img_bytes,
-            media_type=f"image/{ext}",
-        )
+        return Response(content=result_image_bytes, media_type="image/png")
+
+    except HTTPException as http_exc:
+        raise http_exc
 
     except Exception as e:
-        # Print the full traceback in case of an error
-        traceback.print_exc()
-        # Raise an HTTP exception with the error details
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+        logger.error(f"Error occurred: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/watermark-remover-url")
 async def watermark_remover_with_url(req: WatermarkRemoverRequest):
-
     try:
-        top_left_x, top_left_y, bottom_right_x, bottom_right_y = get_bounding_box_coordinates(
-            req.image_url)
+        start = time.time()
 
-        logging.info(
-            f"Bounding Box Coordinates: ({top_left_x}, {top_left_y}), ({bottom_right_x}, {bottom_right_y})")
-        base64_img, base64_mask = download_and_create_mask(req.image_url, top_left_x, top_left_y,
-                                                           bottom_right_x, bottom_right_y)
+        if await validate_api_key(req.api_key) != 200:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        top_left_x, top_left_y, bottom_right_x, bottom_right_y = await get_bounding_box_coordinates(req.image_url)
+
+        base64_img, base64_mask = await download_and_create_mask(req.image_url, top_left_x, top_left_y,
+                                                                 bottom_right_x, bottom_right_y)
         image, alpha_channel, infos = decode_base64_to_image(base64_img)
         mask, _, _ = decode_base64_to_image(base64_mask, gray=True)
 
@@ -212,11 +134,12 @@ async def watermark_remover_with_url(req: WatermarkRemoverRequest):
                 detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
             )
 
-        start = time.time()
         # Use the LaMa model for inpainting
+        process_start_time = time.time()
         rgb_np_img = lama_model(image, mask, req)
-        logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
-        torch_gc()
+        logger.info(
+            f"Model inference time: {(time.time() - process_start_time) * 1000:.2f} ms")
+        # torch_gc()
 
         rgb_np_img = cv2.cvtColor(
             rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
@@ -229,6 +152,22 @@ async def watermark_remover_with_url(req: WatermarkRemoverRequest):
             quality=95,  # Assuming config is defined somewhere else
             infos=infos,
         )
+
+        time_taken = int((time.time() - start) * 1000)
+
+        proceed_request_data = {
+            "apiKey": req.api_key,
+            "creditsToDeduct": 1,
+            "endpointName": "Watermark Remover",
+            "origin": req.origin,
+            "timeTaken": time_taken
+        }
+
+        # Make the proceed request
+        await make_post_request(proceed_request_data)
+
+        # Log the proceed request data
+        logger.info(proceed_request_data)
 
         return Response(
             content=res_img_bytes,
@@ -240,24 +179,32 @@ async def watermark_remover_with_url(req: WatermarkRemoverRequest):
         raise http_exception
 
     except Exception as e:
-        # Handle other unexpected errors
-        raise HTTPException(status_code=500, detail="Internal server error")
+        logger.info(f"Error occurred: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/watermark-remover-img")
 async def watermark_remover_with_img(req: WatermarkImgRemoverRequest):
 
     try:
+        start = time.time()
+
+        if "," in req.image:
+            req.image = req.image.split(",")[1]
+
+        if await validate_api_key(req.api_key) != 200:
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
         image, alpha_channel, infos = decode_base64_to_image(req.image)
         image_url = upload_img_to_gcp(req.image)
+        logger.info(image_url)
 
-        logging.info(f"the image url in gcp :{image_url}")
-
-        top_left_x, top_left_y, bottom_right_x, bottom_right_y = get_bounding_box_coordinates(
+        top_left_x, top_left_y, bottom_right_x, bottom_right_y = await get_bounding_box_coordinates(
             image_url)
 
-        base64_img, base64_mask = create_mask_from_base64(req.image, top_left_x, top_left_y,
-                                                          bottom_right_x, bottom_right_y)
+        base64_img, base64_mask = await create_mask_from_base64(req.image, top_left_x, top_left_y,
+                                                                bottom_right_x, bottom_right_y)
+
         image, alpha_channel, infos = decode_base64_to_image(base64_img)
         mask, _, _ = decode_base64_to_image(base64_mask, gray=True)
 
@@ -268,11 +215,13 @@ async def watermark_remover_with_img(req: WatermarkImgRemoverRequest):
                 detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
             )
 
-        start = time.time()
         # Use the LaMa model for inpainting
+        process_start_time = time.time()
         rgb_np_img = lama_model(image, mask, req)
-        logger.info(f"process time: {(time.time() - start) * 1000:.2f}ms")
-        torch_gc()
+        logger.info(
+            f"Model inference time: {(time.time() - process_start_time) * 1000:.2f} ms")
+
+        # torch_gc()
 
         rgb_np_img = cv2.cvtColor(
             rgb_np_img.astype(np.uint8), cv2.COLOR_BGR2RGB)
@@ -282,73 +231,25 @@ async def watermark_remover_with_img(req: WatermarkImgRemoverRequest):
         res_img_bytes = pil_to_bytes(
             Image.fromarray(rgb_res),
             ext=ext,
-            quality=95,  # Assuming config is defined somewhere else
+            quality=95,
             infos=infos,
         )
 
-        return Response(
-            content=res_img_bytes,
-            media_type=f"image/{ext}",
-        )
+        time_taken = int((time.time() - start) * 1000)
 
-    except HTTPException as http_exception:
-        # Handle HTTPException raised by get_bounding_box_coordinates
-        raise http_exception
+        proceed_request_data = {
+            "apiKey": req.api_key,
+            "creditsToDeduct": 1,
+            "endpointName": "Watermark Remover",
+            "origin": req.origin,
+            "timeTaken": time_taken
+        }
 
-    except Exception as e:
-        # Handle other unexpected errors
-        raise HTTPException(status_code=500, detail="Internal server error")
+        # Make the proceed request
+        await make_post_request(proceed_request_data)
 
-
-@app.post("/api/v1/watermark-remover-dp")
-async def watermark_remover_dp(req: WatermarkRemoverRequest):
-
-    try:
-        top_left_x, top_left_y, bottom_right_x, bottom_right_y = get_bounding_box_coordinates(
-            req.image_url)
-
-        logging.info(
-            f"Bounding Box Coordinates: ({top_left_x}, {top_left_y}), ({bottom_right_x}, {bottom_right_y})")
-        base64_img, base64_mask = download_and_create_mask(req.image_url, top_left_x, top_left_y,
-                                                           bottom_right_x, bottom_right_y)
-        image, alpha_channel, infos = decode_base64_to_image(base64_img)
-        mask, _, _ = decode_base64_to_image(base64_mask, gray=True)
-
-        mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
-        if image.shape[:2] != mask.shape[:2]:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
-            )
-
-        # Compress the image
-        logging.info("Compressing image...")
-        compressed_image = compress_image(image, target_size_mb=1)
-        logging.info("Compressed image successfully")
-
-        logging.info("Started Inpainting process...")
-        start = time.time()
-        rgb_np_img = lama_model(compressed_image, mask, req)
-        logger.info(f"Process time: {(time.time() - start) * 1000:.2f}ms")
-        torch_gc()
-
-        logging.info(
-            "Convert the RGB image with alpha channel to PIL image...")
-        # Convert data type to uint8
-        rgb_np_img = np.uint8(rgb_np_img)
-        # Convert the RGB image with alpha channel to PIL image
-        pil_image = Image.fromarray(rgb_np_img)
-
-        logging.info(
-            "Convert the RGB image with alpha channel to PIL image...")
-        # Convert PIL image to bytes
-        ext = "jpeg"
-        res_img_bytes = pil_to_bytes(
-            pil_image,
-            ext=ext,
-            quality=95,  # Assuming config is defined somewhere else
-            infos=infos,
-        )
+        # Log the proceed request data
+        logger.info(proceed_request_data)
 
         return Response(
             content=res_img_bytes,
@@ -364,5 +265,87 @@ async def watermark_remover_dp(req: WatermarkRemoverRequest):
         raise HTTPException(status_code=500, detail=e)
 
 
+@app.post("/api/v1/watermark-remover-dp")
+async def watermark_remover_dp(req: WatermarkRemoverRequest):
+
+    try:
+        start = time.time()
+
+        # if await validate_api_key(req.api_key) != 200:
+        #     raise HTTPException(status_code=401, detail="Invalid API key")
+
+        top_left_x, top_left_y, bottom_right_x, bottom_right_y = await get_bounding_box_coordinates(req.image_url)
+
+        base64_img, base64_mask = await download_and_create_mask(req.image_url, top_left_x, top_left_y,
+                                                                 bottom_right_x, bottom_right_y)
+        image, alpha_channel, infos = decode_base64_to_image(base64_img)
+        mask, _, _ = decode_base64_to_image(base64_mask, gray=True)
+
+        mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)[1]
+        if image.shape[:2] != mask.shape[:2]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image size({image.shape[:2]}) and mask size({mask.shape[:2]}) not match.",
+            )
+
+        # Compress the image
+        compressed_image = compress_image(image, target_size_mb=1)
+
+        start = time.time()
+        rgb_np_img = lama_model(compressed_image, mask, req)
+        logger.info(f"Process time: {(time.time() - start) * 1000:.2f}ms")
+
+        # Convert data type to uint8
+        rgb_np_img = np.uint8(rgb_np_img)
+        pil_image = Image.fromarray(rgb_np_img)
+
+        # # Add watermark
+        # watermark_path = os.path.join("app", "media", "DpLogo.png")
+        # pil_image = resize_and_position_watermark(pil_image, watermark_path)
+
+        # Convert PIL image to bytes
+        ext = "jpeg"
+        res_img_bytes = pil_to_bytes(
+            pil_image,
+            ext=ext,
+            quality=95,  # Assuming config is defined somewhere else
+            infos=infos,
+        )
+
+        time_taken = int((time.time() - start) * 1000)
+
+        proceed_request_data = {
+            "apiKey": req.api_key,
+            "creditsToDeduct": 1,
+            "endpointName": "Watermark Remover",
+            "origin": req.origin,
+            "timeTaken": time_taken
+        }
+
+        # Make the proceed request
+        await make_post_request(proceed_request_data)
+
+        # Log the proceed request data
+        logger.info(proceed_request_data)
+
+        return Response(
+            content=res_img_bytes,
+            media_type=f"image/{ext}",
+        )
+
+    except HTTPException as http_exception:
+        # Handle HTTPException raised by get_bounding_box_coordinates
+        raise http_exception
+
+    except Exception as e:
+        logger.info(f"Error occurred: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+################################## Free Version############################
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    # num_workers = multiprocessing.cpu_count()
+    # logger.success(f"Num Workers: {num_workers}")
+    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)
