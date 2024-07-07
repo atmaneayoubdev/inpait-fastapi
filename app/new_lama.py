@@ -1,6 +1,4 @@
-import abc
-from typing import Optional
-
+import os
 import cv2
 import torch
 import numpy as np
@@ -8,41 +6,40 @@ from loguru import logger
 
 from app.helper import (
     boxes_from_mask,
-    resize_max_size,
     pad_img_to_modulo,
+    norm_img
 )
 from app.schema import InpaintRequest, HDStrategy
 
 
-class InpaintModel:
-    name = "base"
-    min_size: Optional[int] = None
+class NewLaMa:
+    name = "lama"
     pad_mod = 8
     pad_to_square = False
-    is_erase_model = False
+    is_erase_model = True
+    min_size = None
 
     def __init__(self, device, **kwargs):
-        """
-
-        Args:
-            device:
-        """
-        # device = switch_mps_device(self.name, device)
         self.device = device
         self.init_model(device, **kwargs)
 
-    @abc.abstractmethod
     def init_model(self, device, **kwargs):
-        ...
+        model_path = "app/checkpoints/big-lama.pt"
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Model file not found at: {model_path}")
+        self.model = torch.jit.load(model_path, map_location=device).eval()
 
-    @abc.abstractmethod
     def forward(self, image, mask, config: InpaintRequest):
-        """Input images and output images have same size
-        images: [H, W, C] RGB
-        masks: [H, W, 1] 255 为 masks 区域
-        return: BGR IMAGE
-        """
-        ...
+        image = norm_img(image)
+        mask = norm_img(mask)
+        mask = (mask > 0) * 1
+        image = torch.from_numpy(image).unsqueeze(0).to(self.device)
+        mask = torch.from_numpy(mask).unsqueeze(0).to(self.device)
+        inpainted_image = self.model(image, mask)
+        cur_res = inpainted_image[0].permute(1, 2, 0).detach().cpu().numpy()
+        cur_res = np.clip(cur_res * 255, 0, 255).astype("uint8")
+        cur_res = cv2.cvtColor(cur_res, cv2.COLOR_RGB2BGR)
+        return cur_res
 
     def _pad_forward(self, image, mask, config: InpaintRequest):
         origin_height, origin_width = image.shape[:2]
@@ -52,17 +49,11 @@ class InpaintModel:
         pad_mask = pad_img_to_modulo(
             mask, mod=self.pad_mod, square=self.pad_to_square, min_size=self.min_size
         )
-
-        # logger.info(f"final forward pad size: {pad_image.shape}")
-
         image, mask = self.forward_pre_process(image, mask, config)
-
         result = self.forward(pad_image, pad_mask, config)
         result = result[0:origin_height, 0:origin_width, :]
-
         result, image, mask = self.forward_post_process(
             result, image, mask, config)
-
         if config.sd_keep_unmasked_area:
             mask = mask[:, :, np.newaxis]
             result = result * (mask / 255) + \
@@ -77,13 +68,7 @@ class InpaintModel:
 
     @torch.no_grad()
     def __call__(self, image, mask, config: InpaintRequest):
-        """
-        images: [H, W, C] RGB, not normalized
-        masks: [H, W]
-        return: BGR IMAGE
-        """
         inpaint_result = None
-        # logger.info(f"hd_strategy: {config.hd_strategy}")
         if config.hd_strategy == HDStrategy.CROP:
             if max(image.shape) > config.hd_strategy_crop_trigger_size:
                 logger.info(f"Run crop strategy")
@@ -93,76 +78,30 @@ class InpaintModel:
                     crop_image, crop_box = self._run_box(
                         image, mask, box, config)
                     crop_result.append((crop_image, crop_box))
-
                 inpaint_result = image[:, :, ::-1]
                 for crop_image, crop_box in crop_result:
                     x1, y1, x2, y2 = crop_box
                     inpaint_result[y1:y2, x1:x2, :] = crop_image
-
-        elif config.hd_strategy == HDStrategy.RESIZE:
-            if max(image.shape) > config.hd_strategy_resize_limit:
-                origin_size = image.shape[:2]
-                downsize_image = resize_max_size(
-                    image, size_limit=config.hd_strategy_resize_limit
-                )
-                downsize_mask = resize_max_size(
-                    mask, size_limit=config.hd_strategy_resize_limit
-                )
-
-                logger.info(
-                    f"Run resize strategy, origin size: {image.shape} forward size: {downsize_image.shape}"
-                )
-                inpaint_result = self._pad_forward(
-                    downsize_image, downsize_mask, config
-                )
-
-                # only paste masked area result
-                inpaint_result = cv2.resize(
-                    inpaint_result,
-                    (origin_size[1], origin_size[0]),
-                    interpolation=cv2.INTER_CUBIC,
-                )
-                original_pixel_indices = mask < 127
-                inpaint_result[original_pixel_indices] = image[:, :, ::-1][
-                    original_pixel_indices
-                ]
-
         if inpaint_result is None:
             inpaint_result = self._pad_forward(image, mask, config)
-
         return inpaint_result
 
     def _crop_box(self, image, mask, box, config: InpaintRequest):
-        """
-
-        Args:
-            image: [H, W, C] RGB
-            mask: [H, W, 1]
-            box: [left,top,right,bottom]
-
-        Returns:
-            BGR IMAGE, (l, r, r, b)
-        """
         box_h = box[3] - box[1]
         box_w = box[2] - box[0]
         cx = (box[0] + box[2]) // 2
         cy = (box[1] + box[3]) // 2
         img_h, img_w = image.shape[:2]
-
         w = box_w + config.hd_strategy_crop_margin * 2
         h = box_h + config.hd_strategy_crop_margin * 2
-
         _l = cx - w // 2
         _r = cx + w // 2
         _t = cy - h // 2
         _b = cy + h // 2
-
         l = max(_l, 0)
         r = min(_r, img_w)
         t = max(_t, 0)
         b = min(_b, img_h)
-
-        # try to get more context when crop around image edge
         if _l < 0:
             r += abs(_l)
         if _r > img_w:
@@ -171,31 +110,22 @@ class InpaintModel:
             b += abs(_t)
         if _b > img_h:
             t -= _b - img_h
-
         l = max(l, 0)
         r = min(r, img_w)
         t = max(t, 0)
         b = min(b, img_h)
-
         crop_img = image[t:b, l:r, :]
         crop_mask = mask[t:b, l:r]
-
-        # logger.info(f"box size: ({box_h},{box_w}) crop size: {crop_img.shape}")
-
         return crop_img, crop_mask, [l, t, r, b]
 
     def _run_box(self, image, mask, box, config: InpaintRequest):
-        """
-
-        Args:
-            image: [H, W, C] RGB
-            mask: [H, W, 1]
-            box: [left,top,right,bottom]
-
-        Returns:
-            BGR IMAGE
-        """
         crop_img, crop_mask, [l, t, r, b] = self._crop_box(
             image, mask, box, config)
-
         return self._pad_forward(crop_img, crop_mask, config), [l, t, r, b]
+
+# Example usage:
+# device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# model = NewLaMa(device)
+# inpainted_image = model(image, mask, config)
+
+

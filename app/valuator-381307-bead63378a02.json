@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "valuator-381307",
+  "private_key_id": "bead63378a028ecd4ed31161bb30bc1bf4642be9",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQCxtbzOaifSmUW8\n23No46K2TAM8nfdvnqdXDw29GJsHjEYvl/l0AcPx6SZCDLtQNUzaCrYbBCEblgQM\nOXkoexCcaRpfoBa01zwiJFxoz4Wy6Pa0VSG3Fnp8rNrUMLkArI0hZr0cbA58dejR\n+8Hx7NTgR2Y0WgBMghPFYqyv0O/LjEG4fjeG77O6rtSMKojueyv5yJtCJgWZmU2N\nSZtsgTFoi6siB2gZYdsBSoWivqCBsALalumzngkEKI3NOsqcY7t8ZeREtNJcJIzv\nOVQOx99ldCnUiMwqn7/wOvLIZi8MYY23QL4Dh7FqtFYlJSidGEiKQDP6HnfRMoeC\ngitPBGOrAgMBAAECggEAPqiBI1ibpO5FAANybFvC3brscz2RZmpOv2v/4Joh42Xq\nw1I28tfCgnO9+RDrJKs+Zyzaq6jnkYXx9Gt5VDQcFcIbOfdEukufmLwwVwZAsmXg\nwpG3uwnycy4xVBq/yESO2GWUrUZOT0T1q8A0UHw8TL3wA+pt64v7s5+Ims81FZPO\ngAyXXtPo+/fg8gsyxsLPPQoaKZcBGN/STG1wbKW+FMRpSL9XCt2P2jZOMw/Gl48m\nawN5JYB0Q64+IfCpyvBcb+f7SPp+ZzYfWSqlBlpDaMVLRgzHMZdL50gpU8euNcdz\nFSP0dJtqxXKe8HU7FXedLp/NZLUPDloYcm4P6cYHhQKBgQDdJdjZz1P+QIAfLUbn\nhjOEkl7BGdxjRntn0nBk4yowlAB1ayWVJxAAFfESZVGwBCgWSXOlqIxq25byeebf\nzn+VrG0MXnItbm5tEikMF7Av19O9A0seigTM6xPL4l4sBwzkqBBbLu2FT3xzKokT\n+6MxAF22q5otd4BgpEd50cNPbwKBgQDNt2X8ag9iGcWg3tcrQ9jHXKyrvFXbeD9v\no8ZJa0mDL+dsJF2Ul/d02qyeXAqriHlW2/mrUZgrr9Eg1n7sBZOL3EaaMRld0s/q\nN60Nkz+dqSvmOA5JXfNeO6Gp/jAu4EmWu/c674Crqt2GXEs4+kGTFcqrkMXvH8qo\n+FBZKTZRhQKBgEK1XPFu6f5DBKLi7IWAZN/zqyOCoolLxIPv5bl5EMvwiSbiOEcC\nrn/oHn0XFQoMZu86Hul0q068iI8CGJOgXboPdiGKB9UOf77lAH7GUn5ME3HroWhH\n5+TMcH9K/G85fTkoPS7UPA+/h2HSDeF6QaLRYnNs1igq6Q294FWt4cV/AoGBAKBu\nVMUDWbfh7XRGFXwST2864RaVrEeaga5pBOyhFRWQOGTn/2sxELU7DL/7e/7GUgrh\nRtbKrWf0l52KajVbK/Q4936sp+G51JgOj5E0srocArZqJQomkPN+gdd2+tCz7e/1\n6xs1SR2YBWcRd0CaOqWgqwwdvZ99Jamc7dx6/XeZAoGBAIQEJXoEWE7NgElF6RWh\n6X+D9siO0GUi+Aj2EkRnQmS8cwmR2W0rrXccUZjNwBmFSdbZoyQGHD5X+Fky3V0A\ngzSjjUGTS4BRXLd2H5sdNebxNt4O4kYbll6YxKxXnM0FXZl5nZrats73cEA/sEnS\nkBkYtnVc4OTdkd5ZeK2gXePc\n-----END PRIVATE KEY-----\n",
+  "client_email": "water-mark-remover@valuator-381307.iam.gserviceaccount.com",
+  "client_id": "103912904208909388537",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/water-mark-remover%40valuator-381307.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}

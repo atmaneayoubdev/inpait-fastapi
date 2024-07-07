@@ -815,3 +815,65 @@ def resize_and_position_watermark(image: Image.Image, watermark_path: str) -> Im
     # Paste the watermark onto the image
     image.paste(watermark, position, watermark)
     return image
+
+
+def apply_watermark(image: np.ndarray, margin: int = 20) -> np.ndarray:
+    # Open the original image and watermark image
+    original_image = Image.fromarray(image)
+    watermark = Image.open("app/media/sefar_ai_logo.png").convert("RGBA")
+
+    # Calculate the new size for the watermark (20% of the original image width)
+    original_width, original_height = original_image.size
+    new_watermark_width = int(original_width * 0.3)
+    watermark_aspect_ratio = watermark.size[1] / watermark.size[0]
+    new_watermark_height = int(new_watermark_width * watermark_aspect_ratio)
+
+    # Resize the watermark
+    watermark = watermark.resize(
+        (new_watermark_width, new_watermark_height), Image.Resampling.LANCZOS)
+
+    # Print the resized watermark size for verification
+    print(f"Resized watermark size: {watermark.size}")
+
+    # Calculate the position to place the watermark (bottom-right corner with margin)
+    position = (original_width - new_watermark_width - margin,
+                original_height - new_watermark_height - margin)
+
+    # Add watermark to the original image
+    transparent = Image.new('RGBA', original_image.size, (0, 0, 0, 0))
+    transparent.paste(original_image, (0, 0))
+    transparent.paste(watermark, position, mask=watermark)
+    # Remove alpha for saving in jpg format
+    watermarked_image = transparent.convert('RGB')
+
+    return np.array(watermarked_image)
+
+
+def resize_and_reduce_quality(image: np.ndarray, max_side: int = 500, quality: int = 85) -> np.ndarray:
+    # Convert the image to PIL format
+    pil_image = Image.fromarray(image)
+
+    # Calculate the new size while maintaining the aspect ratio
+    original_width, original_height = pil_image.size
+    if original_width > original_height:
+        new_width = max_side
+        new_height = int((max_side / original_width) * original_height)
+    else:
+        new_height = max_side
+        new_width = int((max_side / original_height) * original_width)
+
+    # Resize the image
+    resized_image = pil_image.resize(
+        (new_width, new_height), Image.Resampling.LANCZOS)
+
+    # Save the resized image to a BytesIO object with reduced quality
+    output = io.BytesIO()
+    resized_image.save(output, format='JPEG', quality=quality)
+    output.seek(0)
+
+    # Read the image back from the BytesIO object
+    reduced_quality_image = Image.open(output)
+
+    return np.array(reduced_quality_image)
+# Example usage
+# resized_image = resize_and_reduce_quality(image)
